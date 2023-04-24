@@ -30,7 +30,21 @@ async def process_list(client, requests, speed_config=(16, 8)):
     )
     return results
 
+def find_after_text(text, search, return_after=True):
+    pattern = re.compile(fr"{text}(.*)$", re.IGNORECASE)
+    result = pattern.match(search)
+    if result:
+        if return_after:
+            return result.group()
+        return result.group().replace(text, "")
+    return None
+
+# IANA
+
 async def scan_iana():
+    # https://data.iana.org/TLD/tlds-alpha-by-domain.txt
+    # Maybe scrape them faster by: echo a.ABARTH | nc whois.iana.org 43  ?
+    
     iana_url = "https://www.iana.org/domains/root/db"
 
     # speed settings for iana.org without breaking (max_at_once, max_per_second)
@@ -75,17 +89,22 @@ def get_iana_whois_domain(html):
             if result:
                 return result
 
-def find_after_text(text, search, return_after=True):
-    pattern = re.compile(fr"{text}(.*)$", re.IGNORECASE)
-    result = pattern.match(search)
-    if result:
-        if return_after:
-            return result.group()
-        return result.group().replace(text, "")
-    return None
+## PSL
+
+async def scan_psl():
+    psl_url = "https://publicsuffix.org/list/public_suffix_list.dat"
+
+    client = httpx.AsyncClient()
+    psl_first_page_request = [
+        httpx.Request("GET", psl_url)
+    ]
+    psl_first_page = await process_list(client, psl_first_page_request)
+    print(psl_first_page[0]['text'])
+
 
 async def main():
     await scan_iana()
+    # await scan_psl()
 
 if __name__ == "__main__":
     asyncio.run(main())
