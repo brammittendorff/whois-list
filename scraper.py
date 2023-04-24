@@ -1,82 +1,68 @@
 import re
 import asyncio
-from urllib.parse import urlparse
-import concurrent.futures
-from concurrent.futures import ProcessPoolExecutor
-from multiprocessing import cpu_count 
-import numpy as np 
-
-import aiohttp
+import functools
+import aiometer
+import httpx
 from bs4 import BeautifulSoup
+from urllib.parse import urlparse
 
-num_cores = cpu_count()
-max_concurrency = 1
-max_concurrency_per_host = 3
-sem = asyncio.Semaphore(max_concurrency)
+async def fetch(client, request):
+    try:
+        response = await client.send(request)
+        print(f"{request.url}\t{response.status_code}")
+        return {
+            'text': response.text,
+            'status_code': response.status_code,
+            'url': request.url
+        }
+    except Exception as e:
+        # Sometimes a reques fails, but we don't care about that we will scrape it later
+        print(f"{request.url}\tFAILED")
+        pass
 
-async def fetch(session, url):
-    print(url)
-    print(sem)
-    async with sem: # semaphore limits num of simultaneous downloads 
-        async with session.get(url) as response:
-            if response.status != 200:
-                response.raise_for_status()
-            return await response.text()
-
-async def fetch_task(pages_for_task):
-    print(pages_for_task)
-    async with aiohttp.ClientSession() as session:
-        tasks = [ 
-            fetch(page, session) 
-            for page in pages_for_task if len(page)
-        ] 
-        list_of_lists = await asyncio.gather(*tasks) 
-        return sum(list_of_lists, []) 
- 
-def asyncio_wrapper(pages_for_task):
-    return asyncio.run(fetch_task(pages_for_task))
-
-def asyncio_rate_limit_get(pages):
-    executor = ProcessPoolExecutor(max_workers=num_cores)
-    print(num_cores)
-    print(np.array_split(pages, num_cores))
-    print(type(pages))
-    tasks = [ 
-        executor.submit(asyncio_wrapper, pages_for_task) 
-        for pages_for_task in np.array_split(pages, num_cores) if len(pages_for_task)
-    ]
-    doneTasks, _ = concurrent.futures.wait(tasks) 
-
-    results = [ 
-        item.result() 
-        for item in doneTasks 
-    ]
-
+async def process_list(client, requests, speed_config=(16, 8)):
+    max_at_once, max_per_second = speed_config
+    jobs = [functools.partial(fetch, client, request) for request in requests]
+    results = await aiometer.run_all(
+        jobs,
+        max_at_once=max_at_once,
+        max_per_second=max_per_second
+    )
     return results
 
 async def scan_iana():
-    iana_url = ["https://www.iana.org/domains/root/db"]
-    whois_domains = []
-    # iana_first_page = asyncio_rate_limit_get(iana_url)
-    # print(iana_first_page)
-    urls = ['https://nerd.host']
-    test = asyncio_rate_limit_get(urls)
-    print(test)
-    
-    # iana_links = get_iana_domain_links(iana_url, iana_first_page)
-    # html_sub_pages = asyncio_rate_limit_get(iana_links)
-    # for sub_page in html_sub_pages:
-    #     print(get_iana_whois_domain(sub_page))
-    #     whois_domains.append(get_iana_whois_domain(sub_page))
-    # return whois_domains
+    iana_url = "https://www.iana.org/domains/root/db"
 
+    # speed settings for iana.org without breaking (max_at_once, max_per_second)
+    speed_config = (40, 20)
+
+    # Headers are required by iana.org
+    headers = {'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36'}
+
+    client = httpx.AsyncClient()
+    iana_first_page_request = [
+        httpx.Request("GET", iana_url, headers=headers)
+    ]
+    iana_first_page = await process_list(client, iana_first_page_request, speed_config)
+    iana_links = get_iana_domain_links(iana_url, iana_first_page[0]['text'])
+
+    iana_whois_detail_pages = [
+        httpx.Request("GET", link, headers=headers)
+        for link in iana_links
+    ]
+    iana_detail_pages = await process_list(client, iana_whois_detail_pages, speed_config)
+    for detail_page in iana_detail_pages:
+        if detail_page:
+            iana_whois_domain = get_iana_whois_domain(detail_page['text'])
+            print(f"{iana_whois_domain}\t{detail_page['url']}\t{detail_page['status_code']}")
+    
 def get_iana_domain_links(url, html_page):
     soup = BeautifulSoup(html_page, "html.parser")
     scheme = urlparse(url).scheme
     netloc = urlparse(url).netloc
     links = [
         f"{scheme}://{netloc}{link.get('href')}"
-        for link in soup.find("table", class_="iana-table").find_all_next("a")
+        for link in soup.find("table", {"class": "iana-table"}).find_all_next("a") if "/domains/root/db/" in link.get('href')
     ]
     return links
 
@@ -99,8 +85,7 @@ def find_after_text(text, search, return_after=True):
     return None
 
 async def main():
-    return await scan_iana()
+    await scan_iana()
 
-# Run program
-loop = asyncio.get_event_loop() 
-loop.run_until_complete(main())
+if __name__ == "__main__":
+    asyncio.run(main())

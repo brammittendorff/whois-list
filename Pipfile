@@ -5,9 +5,9 @@ name = "pypi"
 
 [packages]
 asyncio = "*"
-aiohttp = "*"
 beautifulsoup4 = "*"
-numpy = "*"
+aiometer = "*"
+httpx = "*"
 
 [dev-packages]
 
