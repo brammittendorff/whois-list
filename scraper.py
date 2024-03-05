@@ -68,10 +68,11 @@ async def scan_iana():
                 unique_iana_servers.add(iana_whois_domain)
                 logging.info(f"{iana_whois_domain}\t{detail_page['url']}\t{detail_page['status_code']}")
 
-    total_unique_iana_servers = len(unique_iana_servers)
+    # Return total
+    total_iana_servers = len(unique_iana_servers)
     for server in unique_iana_servers:
         logging.info(server)
-    logging.info(f"\nUnique IANA WHOIS servers (Total: {total_unique_iana_servers}):")
+    return total_iana_servers
 
 def get_iana_domain_links(url, html_page):
     soup = BeautifulSoup(html_page, "html.parser")
@@ -138,15 +139,19 @@ async def scan_psl():
         max_at_once=max_concurrent_whois
     )
 
+    # Return total
     unique_servers = set(found_whois_servers.values())
-    total_servers = len(unique_servers)
+    total_psl_servers = len(unique_servers)
     for server in unique_servers:
         logging.info(server)
-    logging.info(f"\nUnique PSL WHOIS servers (Total: {total_servers}):")
+    return total_psl_servers
+    
 
 async def main():
-    await scan_iana()
-    await scan_psl()
+    total_iana_whois_servers = await scan_iana()
+    total_psl_whois_servers = await scan_psl()
+    logging.info(f"Unique IANA WHOIS servers (Total: {total_iana_whois_servers}):")
+    logging.info(f"Unique PSL WHOIS servers (Total: {total_psl_whois_servers}):")
 
 if __name__ == "__main__":
     asyncio.run(main())
