@@ -8,6 +8,8 @@ asyncio = "*"
 beautifulsoup4 = "*"
 aiometer = "*"
 httpx = "*"
+tldextract = "*"
+
 
 [dev-packages]
 
