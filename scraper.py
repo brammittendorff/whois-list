@@ -23,9 +23,6 @@ async def fetch(client, request):
         logging.warning(f"{request.url}\tFAILED")
         pass
 
-async def fetch_tcp(client):
-    pass
-
 async def process_list(client, requests, speed_config=(16, 8)):
     max_at_once, max_per_second = speed_config
     jobs = [functools.partial(fetch, client, request) for request in requests]
@@ -63,11 +60,18 @@ async def scan_iana():
         for link in iana_links
     ]
     iana_detail_pages = await process_list(client, iana_whois_detail_pages, speed_config)
+    unique_iana_servers = set()
     for detail_page in iana_detail_pages:
         if detail_page:
             iana_whois_domain = get_iana_whois_domain(detail_page['text'])
             if iana_whois_domain:
+                unique_iana_servers.add(iana_whois_domain)
                 logging.info(f"{iana_whois_domain}\t{detail_page['url']}\t{detail_page['status_code']}")
+
+    total_unique_iana_servers = len(unique_iana_servers)
+    for server in unique_iana_servers:
+        logging.info(server)
+    logging.info(f"\nUnique IANA WHOIS servers (Total: {total_unique_iana_servers}):")
 
 def get_iana_domain_links(url, html_page):
     soup = BeautifulSoup(html_page, "html.parser")
@@ -134,12 +138,14 @@ async def scan_psl():
         max_at_once=max_concurrent_whois
     )
 
-    logging.info("\nFound WHOIS servers:")
-    for domain, server in found_whois_servers.items():
-        logging.info(f"{domain}: {server}")
+    unique_servers = set(found_whois_servers.values())
+    total_servers = len(unique_servers)
+    for server in unique_servers:
+        logging.info(server)
+    logging.info(f"\nUnique PSL WHOIS servers (Total: {total_servers}):")
 
 async def main():
-    # await scan_iana()
+    await scan_iana()
     await scan_psl()
 
 if __name__ == "__main__":
