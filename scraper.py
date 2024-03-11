@@ -1,5 +1,5 @@
 import asyncio
-import socket
+import time
 import functools
 import httpx
 import re
@@ -197,7 +197,10 @@ async def main():
     # Set up argument parsing
     parser = argparse.ArgumentParser(description="Scrape WHOIS servers from IANA or PSL")
     parser.add_argument("source", choices=["iana", "psl"], help="The data source to scrape: 'iana' for IANA WHOIS servers, 'psl' for Public Suffix List WHOIS servers")
+    parser.add_argument("--show_time", action="store_true", help="Show scraping completion time")
     args = parser.parse_args()
+
+    start_time = time.time()  # Capture the start time
 
     # Depending on the argument, perform the corresponding scraping
     if args.source == "iana":
@@ -208,6 +211,11 @@ async def main():
         psl_scraper = PSLScraper()
         psl_data = await psl_scraper.get_data()
         logging.info(f"PSL Data: {psl_data}")
+
+    if args.show_time:
+        end_time = time.time()  # Capture the end time
+        duration = end_time - start_time  # Calculate the duration
+        logging.info(f"Scraping completed in {duration:.2f} seconds.")  # Log the duration
 
 if __name__ == "__main__":
     asyncio.run(main())
