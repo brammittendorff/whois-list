@@ -197,7 +197,7 @@ async def main():
     # Set up argument parsing
     parser = argparse.ArgumentParser(description="Scrape WHOIS servers from IANA or PSL")
     parser.add_argument("source", choices=["iana", "psl"], help="The data source to scrape: 'iana' for IANA WHOIS servers, 'psl' for Public Suffix List WHOIS servers")
-    parser.add_argument("--show_time", action="store_true", help="Show scraping completion time")
+    parser.add_argument("--time", action="store_true", help="Show scraping completion time")
     args = parser.parse_args()
 
     start_time = time.time()  # Capture the start time
