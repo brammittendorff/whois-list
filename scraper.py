@@ -74,7 +74,7 @@ class Scraper:
         # In case of a single-part domain (highly unlikely in this context), return it as is
         return parts[-1] if len(parts) > 0 else domain
 
-    async def get_data(self) -> Set[str]:
+    async def get_data(self) -> List[Dict[str, str]]:
         """
         Override this in a subclass to implement specific scraping and data extraction logic.
         """
@@ -87,7 +87,7 @@ class IANAScraper(Scraper):
         super().__init__("https://www.iana.org/domains/root/db")
     
     # Uses aiometer for controlled concurrency
-    async def get_data(self) -> Set[str]:
+    async def get_data(self) -> List[Dict[str, str]]:
         html = await self.get_html()
         domain_links = self.parse_links(html, r"^/domains/root/db/")
         logging.info(f"Found {len(domain_links)} domain links to process.")
@@ -96,8 +96,8 @@ class IANAScraper(Scraper):
         whois_servers = await self.fetch_whois_servers(set(domain_links))
         return whois_servers
 
-    async def fetch_whois_servers(self, links: Set[str]) -> Set[Dict[str, str]]:
-        whois_servers_with_domains = set()
+    async def fetch_whois_servers(self, links: Set[str]) -> List[Dict[str, str]]:
+        whois_servers_with_domains = []  # Changed to a list
         async with httpx.AsyncClient() as client:
             async def fetch_server(link):
                 domain_extension = link.split('/')[-1].replace('.html', '')
@@ -120,7 +120,7 @@ class IANAScraper(Scraper):
 
             tasks = [functools.partial(fetch_server, link) for link in links]
             results = await aiometer.run_all(tasks, max_at_once=MAX_CONCURRENT)
-            whois_servers_with_domains.update(filter(None, results))
+            whois_servers_with_domains.extend(filter(None, results))  # Use extend for lists
         return whois_servers_with_domains
 
     def parse_links(self, html: str, link_pattern: str) -> Set[str]:
@@ -135,6 +135,9 @@ class IANAScraper(Scraper):
 
 # Example Implementation for PSL Scraper
 class PSLScraper(Scraper):
+    def __init__(self, headers: Optional[Dict[str, str]]=None):
+        super().__init__("https://publicsuffix.org/list/public_suffix_list.dat")
+
     async def get_data(self) -> List[Dict[str, str]]:
         logging.debug("Fetching PSL data")
         psl_url = self.base_url
@@ -212,7 +215,7 @@ async def main():
         iana_data = await iana_scraper.get_data()
         logging.info(f"IANA Data: {iana_data}")
     elif args.source == "psl":
-        psl_scraper = PSLScraper("https://publicsuffix.org/list/public_suffix_list.dat")
+        psl_scraper = PSLScraper()
         psl_data = await psl_scraper.get_data()
         logging.info(f"PSL Data: {psl_data}")
 
