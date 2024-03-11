@@ -7,21 +7,22 @@ This script allows you to scrape the WHOIS servers from the IANA website or the 
 
 You can run the script with the following command:
 
-python scraper.py [source] [--time] [--count]
+python scraper.py [source] [--time] [--count] [--concurrency]
 
 Here is a description of the arguments:
 
 - `source`: This argument is required. It specifies the data source to scrape. You can specify either `iana` for IANA WHOIS servers or `psl` for Public Suffix List WHOIS servers.
 - `--time`: This argument is optional. If specified, the script will show the scraping completion time.
 - `--count`: This argument is optional. If specified, the script will count the number of data entries from the source.
+- `--concurrency`: This argument is optional. If specified, the script will adjust the maximum number of concurrent tasks. The default value is 50.
 
 ## Example
 
 Here is an example of how to run the script:
 
-python scraper.py iana --time --count
+python main.py iana --time --count --concurrency 100
 
-This command will scrape the WHOIS servers from the IANA website, show the scraping completion time, and count the number of data entries.
+This command will scrape the WHOIS servers from the IANA website, show the scraping completion time, count the number of data entries, and set the maximum number of concurrent tasks to 100.
 
 ## Output
 
@@ -57,4 +58,4 @@ pip install httpx beautifulsoup4 aiometer
 
 ## Note
 
-The script uses controlled concurrency to make the scraping process faster and to respect the speed constraints of the websites. The maximum number of concurrent tasks is defined by the `MAX_CONCURRENT` constant in the script. You can adjust this value according to your needs and the capabilities of your system.
+The script uses controlled concurrency to make the scraping process faster and to respect the speed constraints of the websites or sockets. The maximum number of concurrent tasks is defined by the `--concurrency` argument in the script. You can adjust this value according to your needs and the capabilities of your system.
