@@ -1,12 +1,10 @@
+
 import asyncio
 import time
 import logging
 import argparse
 from scrapers.iana import IANAScraper
 from scrapers.psl import PSLScraper
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
 
 # Modify the main function to include arguments parsing
 async def main():
@@ -16,7 +14,10 @@ async def main():
     parser.add_argument("--time", action="store_true", help="Show scraping completion time")
     parser.add_argument("--count", action="store_true", help="Count the number of data entries from the source")
     parser.add_argument("--concurrency", type=int, default=50, help="Number of concurrent tasks")
+    parser.add_argument("--log", type=str, default="INFO", help="Set logging level")
     args = parser.parse_args()
+
+    logging.basicConfig(level=args.log, format='%(asctime)s - %(levelname)s - %(message)s')
 
     start_time = time.time()  # Capture the start time
 
@@ -24,13 +25,13 @@ async def main():
     if args.source == "iana":
         iana_scraper = IANAScraper(max_concurrent=args.concurrency)
         iana_data = await iana_scraper.get_data()
-        logging.info(f"IANA Data: {iana_data}")
+        logging.info(iana_data)
         if args.count:
             logging.info(f"Count of IANA data: {len(iana_data)}")
     elif args.source == "psl":
         psl_scraper = PSLScraper(max_concurrent=args.concurrency)
         psl_data = await psl_scraper.get_data()
-        logging.info(f"PSL Data: {psl_data}")
+        logging.info(psl_data)
         if args.count:
             logging.info(f"Count of PSL data: {len(psl_data)}")
 

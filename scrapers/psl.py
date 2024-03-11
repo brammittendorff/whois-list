@@ -55,7 +55,7 @@ class PSLScraper(Scraper):
                 if whois_server_url:
                     domain_extension = self.extract_tld(domain)
                     found_whois_servers.append({'domain_extension': domain_extension, 'whois_server': whois_server_url})
-                    logging.info(f"Found WHOIS server for {domain_extension}: {whois_server_url}")
+                    logging.debug(f"Found WHOIS server for {domain_extension}: {whois_server_url}")
                 else:
                     logging.debug(f"No WHOIS server found for {domain}")
 

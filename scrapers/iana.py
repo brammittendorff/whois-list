@@ -1,3 +1,4 @@
+
 import functools
 import httpx
 from bs4 import BeautifulSoup
@@ -6,6 +7,9 @@ import logging
 from typing import List, Set, Dict, Optional
 from scraper import Scraper
 
+# Disable httpx logging
+httpx_log = logging.getLogger("httpx")
+httpx_log.setLevel(logging.WARNING)
 
 class IANAScraper(Scraper):
     def __init__(self, headers: Optional[Dict[str, str]]=None, max_concurrent: int=50):
@@ -42,7 +46,7 @@ class IANAScraper(Scraper):
                             if 'WHOIS Server:' in p.text:
                                 # Splitting the text to extract the WHOIS server's value
                                 whois_server = p.text.split('WHOIS Server:')[1].strip()
-                                logging.info(f"Found WHOIS server for {domain_extension}: {whois_server}")
+                                logging.debug(f"Found WHOIS server for {domain_extension}: {whois_server}")
                                 return {'domain_extension': domain_extension, 'whois_server': whois_server}
                 except Exception as e:
                     logging.warning(f"Failed to extract WHOIS server from {link}: {e}")
