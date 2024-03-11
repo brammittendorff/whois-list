@@ -50,15 +50,6 @@ class Scraper:
         url = urljoin(self.base_url, path)
         return await Fetcher.fetch_text(url, self.headers)
 
-    def parse_links(self, html: str, link_pattern: str) -> List[str]:
-        soup = BeautifulSoup(html, "html.parser")
-        scheme, netloc = urlparse(self.base_url).scheme, urlparse(self.base_url).netloc
-        links = [
-            f"{scheme}://{netloc}{link.get('href')}"
-            for link in soup.find_all("a", href=True) if re.match(link_pattern, link.get('href'))
-        ]
-        return links
-
     def extract_tld(self, domain: str) -> str:
         """
         Extract the top-level domain (TLD) from a given domain name.
