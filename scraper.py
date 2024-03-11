@@ -137,6 +137,8 @@ class PSLScraper(Scraper):
                 psl_data = response.text.splitlines()
                 psl_domains = [line for line in psl_data if line and not line.startswith('//') and not line.startswith('!')]
                 found_whois_servers = await self.query_whois_servers(psl_domains)
+                # Deduplicate the found_whois_servers
+                found_whois_servers = list({v['whois_server']: v for v in found_whois_servers}.values())
                 return found_whois_servers
             else:
                 logging.error("Failed to fetch PSL data")
@@ -198,6 +200,7 @@ async def main():
     parser = argparse.ArgumentParser(description="Scrape WHOIS servers from IANA or PSL")
     parser.add_argument("source", choices=["iana", "psl"], help="The data source to scrape: 'iana' for IANA WHOIS servers, 'psl' for Public Suffix List WHOIS servers")
     parser.add_argument("--time", action="store_true", help="Show scraping completion time")
+    parser.add_argument("--count", action="store_true", help="Count the number of data entries from the source")
     args = parser.parse_args()
 
     start_time = time.time()  # Capture the start time
@@ -207,12 +210,16 @@ async def main():
         iana_scraper = IANAScraper()
         iana_data = await iana_scraper.get_data()
         logging.info(f"IANA Data: {iana_data}")
+        if args.count:
+            logging.info(f"Count of IANA data: {len(iana_data)}")
     elif args.source == "psl":
         psl_scraper = PSLScraper()
         psl_data = await psl_scraper.get_data()
         logging.info(f"PSL Data: {psl_data}")
+        if args.count:
+            logging.info(f"Count of PSL data: {len(psl_data)}")
 
-    if args.show_time:
+    if args.time:
         end_time = time.time()  # Capture the end time
         duration = end_time - start_time  # Calculate the duration
         logging.info(f"Scraping completed in {duration:.2f} seconds.")  # Log the duration

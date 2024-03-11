@@ -1,46 +1,60 @@
 
-# A Simple Whois List Scraper
+# WHOIS Servers Scraper
 
-For now we get the data from:
+This script allows you to scrape the WHOIS servers from the IANA website or the Public Suffix List (PSL).
 
-- https://www.iana.org/domains/root/db
+## Usage
 
-And then scrape the whois servers so we know where to get the information from (fast).
+You can run the script with the following command:
 
-Additionally, we also get data from:
+python scraper.py [source] [--time] [--count]
 
-- https://publicsuffix.org/list/public_suffix_list.dat
+Here is a description of the arguments:
 
-This allows us to gather a comprehensive list of whois servers across different top-level domains (TLDs) and public suffixes.
+- `source`: This argument is required. It specifies the data source to scrape. You can specify either `iana` for IANA WHOIS servers or `psl` for Public Suffix List WHOIS servers.
+- `--time`: This argument is optional. If specified, the script will show the scraping completion time.
+- `--count`: This argument is optional. If specified, the script will count the number of data entries from the source.
 
-## DB Scheme
+## Example
 
-tlds
+Here is an example of how to run the script:
 
-id,tld,source,created_at,updated_at
+python scraper.py iana --time --count
 
-whois
+This command will scrape the WHOIS servers from the IANA website, show the scraping completion time, and count the number of data entries.
 
-id,tld_id,server,speed,created_at,updated_at
+## Output
 
+The script will output the scraped WHOIS servers in the following format:
 
-## Implementation Details
+[
+    {
+        "domain_extension": "com",
+        "whois_server": "whois.verisign-grs.com"
+    },
+    ...
+]
 
-We use asynchronous programming (with `asyncio` and `httpx`) to fetch data concurrently, improving the efficiency of our scraper. We also utilize `aiometer` to manage the rate of our requests to avoid overwhelming the servers.
+Each object in the array represents a domain extension and its corresponding WHOIS server.
 
-### Logging
+## Dependencies
 
-Basic logging is set up to debug and track the progress of our scrapes, including any potential errors that might occur during the process.
+This script requires the following Python libraries:
 
-### Unique Features
+- `httpx`
+- `beautifulsoup4`
+- `aiometer`
+- `argparse`
+- `logging`
+- `time`
+- `functools`
+- `re`
+- `asyncio`
 
-- **Concurrency Control**: We can adjust the number of concurrent requests and the rate at which they are made to optimize performance without getting blocked by the servers.
-- **Error Handling**: The scraper is designed to handle errors gracefully, logging warnings for failed requests without stopping the entire process.
-- **Data Extraction**: Utilizes `BeautifulSoup` for parsing HTML content and extracting relevant data, such as whois server information.
-- **Command Line Whois Queries**: For domains listed in the Public Suffix List, we perform whois queries using the command line to find the corresponding whois server.
+Please ensure to install the required libraries before running the script. You can install them with pip:
 
-### Future Improvements
+pip install httpx beautifulsoup4 aiometer
 
-- Implement a database to store the scraped whois server information for easy retrieval and analysis.
-- Expand the list of sources from which whois server information is scraped to cover more TLDs and domain types.
-- Improve error handling and logging for better debuggability and monitoring of the scraping process.
+## Note
+
+The script uses controlled concurrency to make the scraping process faster and to respect the speed constraints of the websites. The maximum number of concurrent tasks is defined by the `MAX_CONCURRENT` constant in the script. You can adjust this value according to your needs and the capabilities of your system.
