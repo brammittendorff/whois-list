@@ -11,7 +11,7 @@ from typing import List, Set, Dict, Optional
 import argparse
 from urllib.parse import urljoin
 
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 MAX_CONCURRENT = 50
@@ -81,8 +81,6 @@ class IANAScraper(Scraper):
     async def get_data(self) -> List[Dict[str, str]]:
         html = await self.get_html()
         domain_links = self.parse_links(html, r"^/domains/root/db/")
-        logging.info(f"Found {len(domain_links)} domain links to process.")
-
         # Fetch WHOIS servers concurrently, respecting speed constraints
         whois_servers = await self.fetch_whois_servers(set(domain_links))
         return whois_servers
@@ -104,6 +102,7 @@ class IANAScraper(Scraper):
                             if 'WHOIS Server:' in p.text:
                                 # Splitting the text to extract the WHOIS server's value
                                 whois_server = p.text.split('WHOIS Server:')[1].strip()
+                                logging.info(f"Found WHOIS server for {domain_extension}: {whois_server}")
                                 return {'domain_extension': domain_extension, 'whois_server': whois_server}
                 except Exception as e:
                     logging.warning(f"Failed to extract WHOIS server from {link}: {e}")
@@ -173,7 +172,7 @@ class PSLScraper(Scraper):
                 if whois_server_url:
                     domain_extension = self.extract_tld(domain)
                     found_whois_servers.append({'domain_extension': domain_extension, 'whois_server': whois_server_url})
-                    logging.debug(f"Found WHOIS server for {domain_extension}: {whois_server_url}")
+                    logging.info(f"Found WHOIS server for {domain_extension}: {whois_server_url}")
                 else:
                     logging.debug(f"No WHOIS server found for {domain}")
 
