@@ -49,7 +49,6 @@ This script requires the following Python libraries:
 - `logging`
 - `time`
 - `functools`
-- `re`
 - `asyncio`
 
 Please ensure to install the required libraries before running the script. You can install them with pip:

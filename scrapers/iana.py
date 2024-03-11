@@ -1,8 +1,6 @@
 import functools
 import httpx
-import re
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse
 import aiometer
 import logging
 from typing import List, Set, Dict, Optional
