@@ -1,4 +1,5 @@
 import asyncio
+import socket
 import functools
 import httpx
 import re
@@ -58,6 +59,21 @@ class Scraper:
         ]
         return links
 
+    def extract_tld(self, domain: str) -> str:
+        """
+        Extract the top-level domain (TLD) from a given domain name.
+
+        Args:
+            domain (str): The full domain name.
+
+        Returns:
+            str: The TLD of the domain.
+        """
+        # Split the domain by dots and take the last part as the TLD
+        parts = domain.split('.')
+        # In case of a single-part domain (highly unlikely in this context), return it as is
+        return parts[-1] if len(parts) > 0 else domain
+
     async def get_data(self) -> Set[str]:
         """
         Override this in a subclass to implement specific scraping and data extraction logic.
@@ -80,10 +96,11 @@ class IANAScraper(Scraper):
         whois_servers = await self.fetch_whois_servers(set(domain_links))
         return whois_servers
 
-    async def fetch_whois_servers(self, links: Set[str]) -> Set[str]:
-        whois_servers = set()
+    async def fetch_whois_servers(self, links: Set[str]) -> Set[Dict[str, str]]:
+        whois_servers_with_domains = set()
         async with httpx.AsyncClient() as client:
             async def fetch_server(link):
+                domain_extension = link.split('/')[-1].replace('.html', '')
                 try:
                     resp = await client.get(link)
                     resp.raise_for_status()
@@ -96,16 +113,15 @@ class IANAScraper(Scraper):
                             if 'WHOIS Server:' in p.text:
                                 # Splitting the text to extract the WHOIS server's value
                                 whois_server = p.text.split('WHOIS Server:')[1].strip()
-                                return whois_server
+                                return {'domain_extension': domain_extension, 'whois_server': whois_server}
                 except Exception as e:
                     logging.warning(f"Failed to extract WHOIS server from {link}: {e}")
                 return None
 
             tasks = [functools.partial(fetch_server, link) for link in links]
             results = await aiometer.run_all(tasks, max_at_once=MAX_CONCURRENT)
-            whois_servers.update(filter(None, results))
-
-        return whois_servers
+            whois_servers_with_domains.update(filter(None, results))
+        return whois_servers_with_domains
 
     def parse_links(self, html: str, link_pattern: str) -> Set[str]:
         soup = BeautifulSoup(html, "html.parser")
@@ -119,47 +135,67 @@ class IANAScraper(Scraper):
 
 # Example Implementation for PSL Scraper
 class PSLScraper(Scraper):
-    async def get_data(self) -> set:
+    async def get_data(self) -> List[Dict[str, str]]:
+        logging.debug("Fetching PSL data")
         psl_url = self.base_url
         async with httpx.AsyncClient() as client:
             response = await client.get(psl_url)
             if response.status_code == 200:
                 psl_data = response.text.splitlines()
-                psl_domains = [line for line in psl_data if line and not line.startswith('//')]
+                psl_domains = [line for line in psl_data if line and not line.startswith('//') and not line.startswith('!')]
                 found_whois_servers = await self.query_whois_servers(psl_domains)
-                unique_servers = set(found_whois_servers.values())
-                return unique_servers
+                return found_whois_servers
             else:
-                return set()
+                logging.error("Failed to fetch PSL data")
+                return []
 
-    async def query_whois_servers(self, domains: list) -> dict:
-        found_whois_servers = {}
+    async def query_whois_servers(self, domains: list) -> List[Dict[str, str]]:
+        found_whois_servers = []
+
         async def whois_query(domain):
-            cmd = f"echo {domain} | nc whois.iana.org 43"
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate()
-            output = stdout.decode()
-            whois_server = None
-            for line in output.splitlines():
-                if line.lower().startswith('whois:'):
-                    whois_server = line.split(':')[1].strip()
-                    break
-            if whois_server:
-                found_whois_servers[domain] = whois_server
-                logging.debug(f"WHOIS server for {domain}: {whois_server}")
-            else:
-                logging.debug(f"WHOIS server for {domain}: NOT FOUND")
-            if stderr:
-                logging.error(f"WHOIS query error for {domain}: {stderr.decode()}")
+            logging.debug(f"Querying WHOIS for domain: {domain}")
+            # Standard WHOIS server and port
+            whois_server = "whois.iana.org"
+            port = 43
 
+            try:
+                # Open a connection to the WHOIS server
+                reader, writer = await asyncio.open_connection(whois_server, port)
+                # Send the query followed by CRLF
+                query = f"{domain}\r\n".encode()
+                writer.write(query)
+                await writer.drain()
+
+                # Read the response
+                response = await reader.read(-1)  # Read until EOF
+
+                # Extract the WHOIS server from the response
+                whois_server_url = None
+                for line in response.decode().splitlines():
+                    if line.lower().startswith('whois:'):
+                        whois_server_url = line.split(':')[1].strip()
+                        break
+
+                if whois_server_url:
+                    domain_extension = self.extract_tld(domain)
+                    found_whois_servers.append({'domain_extension': domain_extension, 'whois_server': whois_server_url})
+                    logging.debug(f"Found WHOIS server for {domain_extension}: {whois_server_url}")
+                else:
+                    logging.debug(f"No WHOIS server found for {domain}")
+
+            except Exception as e:
+                logging.error(f"Error querying WHOIS for {domain}: {e}")
+
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        # Run the WHOIS queries with controlled concurrency
         await aiometer.run_all(
             [functools.partial(whois_query, domain) for domain in domains],
             max_at_once=MAX_CONCURRENT
         )
+
         return found_whois_servers
 
 
