@@ -13,13 +13,19 @@ class IANAScraper(Scraper):
     def __init__(self, headers: Optional[Dict[str, str]]=None, max_concurrent: int=50):
         super().__init__("https://www.iana.org/domains/root/db", max_concurrent=max_concurrent)
     
-    # Uses aiometer for controlled concurrency
     async def get_data(self) -> List[Dict[str, str]]:
-        html = await self.get_html()
-        domain_links = self.parse_links(html, r"^/domains/root/db/")
+        domain_links = await self.get_domain_links("http://data.iana.org/TLD/tlds-alpha-by-domain.txt")
         # Fetch WHOIS servers concurrently, respecting speed constraints
         whois_servers = await self.fetch_whois_servers(set(domain_links))
         return whois_servers
+
+    async def get_domain_links(self, url: str) -> List[str]:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            lines = resp.text.splitlines()
+            domains = [f"{self.base_url}/{line.lower()}.html" for line in lines if not line.startswith("#")]
+        return domains
 
     async def fetch_whois_servers(self, links: Set[str]) -> List[Dict[str, str]]:
         found_whois_servers = []  # Changed to a list
@@ -48,12 +54,3 @@ class IANAScraper(Scraper):
             results = await aiometer.run_all(tasks, max_at_once=self.max_concurrent)
             found_whois_servers.extend(filter(None, results))  # Use extend for lists
         return found_whois_servers
-
-    def parse_links(self, html: str, link_pattern: str) -> Set[str]:
-        soup = BeautifulSoup(html, "html.parser")
-        scheme, netloc = urlparse(self.base_url).scheme, urlparse(self.base_url).netloc
-        links = {
-            f"{scheme}://{netloc}{link.get('href')}"
-            for link in soup.find_all("a", href=True) if re.match(link_pattern, link.get('href'))
-        }
-        return links

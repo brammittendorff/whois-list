@@ -12,9 +12,8 @@ class PSLScraper(Scraper):
 
     async def get_data(self) -> List[Dict[str, str]]:
         logging.debug("Fetching PSL data")
-        psl_url = self.base_url
         async with httpx.AsyncClient() as client:
-            response = await client.get(psl_url)
+            response = await client.get(self.base_url)
             if response.status_code == 200:
                 psl_data = response.text.splitlines()
                 psl_domains = [line for line in psl_data if line and not line.startswith('//') and not line.startswith('!')]
