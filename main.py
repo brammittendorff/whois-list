@@ -1,4 +1,4 @@
-
+import json
 import asyncio
 import time
 import logging
@@ -15,6 +15,7 @@ async def main():
     parser.add_argument("--count", action="store_true", help="Count the number of data entries from the source")
     parser.add_argument("--concurrency", type=int, default=50, help="Number of concurrent tasks")
     parser.add_argument("--log", type=str, default="INFO", help="Set logging level")
+    parser.add_argument("--output", type=str, default="list.json", help="Name of the output JSON file (default: list.json)")
     args = parser.parse_args()
 
     logging.basicConfig(level=args.log, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -28,12 +29,29 @@ async def main():
         logging.info(iana_data)
         if args.count:
             logging.info(f"Count of IANA data: {len(iana_data)}")
+        
+        # Validate and save the data as JSON
+        try:
+            json_data = json.dumps(iana_data, ensure_ascii=False, indent=4)
+            with open(args.output, "w") as f:
+                f.write(json_data)
+        except (TypeError, ValueError) as e:
+            logging.error(f"Failed to serialize IANA data to JSON: {e}")
+
     elif args.source == "psl":
         psl_scraper = PSLScraper(max_concurrent=args.concurrency)
         psl_data = await psl_scraper.get_data()
         logging.info(psl_data)
         if args.count:
             logging.info(f"Count of PSL data: {len(psl_data)}")
+        
+        # Validate and save the data as JSON
+        try:
+            json_data = json.dumps(psl_data, ensure_ascii=False, indent=4)
+            with open(args.output, "w") as f:
+                f.write(json_data)
+        except (TypeError, ValueError) as e:
+            logging.error(f"Failed to serialize PSL data to JSON: {e}")
 
     if args.time:
         end_time = time.time()  # Capture the end time
