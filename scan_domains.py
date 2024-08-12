@@ -9,7 +9,7 @@ import argparse
 import json
 
 # Configure logging to capture errors
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Function to perform a WHOIS query to a specified WHOIS server
 def custom_whois_query(domain, whois_server, port=43, timeout=10):
@@ -110,7 +110,7 @@ def check_domain(domain, whois_servers, retries=5, delay=10):
                     logging.info(f"{domain} is available (checked via {whois_server})!")
                     return domain
                 elif "Domain Name:" in response or "Status: active" in response or "Domain Status:" in response:
-                    logging.debug(f"{domain} is taken (checked via {whois_server}).")
+                    logging.info(f"{domain} is taken (checked via {whois_server}).")
                     return None
                 else:
                     logging.warning(f"Ambiguous WHOIS response from {whois_server} for {domain}, retrying...")
@@ -169,7 +169,6 @@ def generate_domains_1_and_6_plus(tld):
         for combo in itertools.product(*pattern):
             yield ''.join(combo) + tld
 
-# Function to run the domain checks in parallel with reduced concurrency and batch processing
 def scan_domains_in_batches(domains, whois_servers, initial_batch_size=50, max_batch_size=1000, min_batch_size=10, max_workers=10):
     all_available_domains = []
     batch = []
@@ -177,6 +176,7 @@ def scan_domains_in_batches(domains, whois_servers, initial_batch_size=50, max_b
     total_queries = 0
     current_batch_size = initial_batch_size
     dynamic_delay = 0  # Initialize dynamic_delay to 0
+    timeout_errors_occurred = False  # Initialize the timeout errors flag
 
     def adjust_batch_size(avg_time_per_domain, timeout_errors_occurred):
         nonlocal current_batch_size
@@ -193,44 +193,49 @@ def scan_domains_in_batches(domains, whois_servers, initial_batch_size=50, max_b
                 current_batch_size = max(current_batch_size - 10, min_batch_size)
                 logging.debug(f"Decreasing batch size to {current_batch_size}")
 
+    def process_and_adjust(batch, current_batch_size):
+        nonlocal total_time, total_queries, dynamic_delay, all_available_domains
+
+        start_time = time.time()
+        available_domains, timeout_errors_occurred = process_batch_with_error_handling(batch, whois_servers, max_workers)
+        batch_time = time.time() - start_time
+        all_available_domains.extend(available_domains)
+
+        # Update total time and queries
+        total_time += batch_time
+        total_queries += len(available_domains)
+
+        # Calculate average response time per domain in the batch
+        avg_time_per_domain = total_time / total_queries if total_queries > 0 else 0
+        logging.debug(f"Average WHOIS query time per domain: {avg_time_per_domain:.4f} seconds")
+
+        # Adjust the batch size based on performance and errors
+        adjust_batch_size(avg_time_per_domain, timeout_errors_occurred)
+
+        # Dynamic delay based on the average time per domain
+        dynamic_delay = max(0, dynamic_delay + (avg_time_per_domain * current_batch_size) - 0.5)  # Adjust the calculation as needed
+        dynamic_delay = min(dynamic_delay, 10)  # Ensure it doesn't exceed 10 seconds
+        dynamic_delay = max(dynamic_delay, 0)   # Ensure it doesn't go below 0 seconds
+
+        logging.debug(f"Waiting {dynamic_delay:.2f} seconds before processing the next batch...")
+        time.sleep(dynamic_delay)
+
+    # Process batches
     for domain in domains:
         batch.append(domain)
         if len(batch) >= current_batch_size:
-            start_time = time.time()
-            available_domains, timeout_errors_occurred = process_batch_with_error_handling(batch, whois_servers, max_workers)
-            batch_time = time.time() - start_time
-            all_available_domains.extend(available_domains)
-            batch = []
-
-            # Update total time and queries
-            total_time += batch_time
-            total_queries += len(available_domains)
-
-            # Calculate average response time per domain in the batch
-            avg_time_per_domain = total_time / total_queries if total_queries > 0 else 0
-            logging.debug(f"Average WHOIS query time per domain: {avg_time_per_domain:.4f} seconds")
-
-            # Adjust the batch size based on performance and errors
-            adjust_batch_size(avg_time_per_domain, timeout_errors_occurred)
-
-            # Dynamic delay based on the average time per domain
-            # Initialize dynamic_delay to 0 at the start
-            dynamic_delay = max(0, dynamic_delay + (avg_time_per_domain * current_batch_size) - 0.5)  # Adjust the calculation as needed
-            dynamic_delay = min(dynamic_delay, 10)  # Ensure it doesn't exceed 10 seconds
-            dynamic_delay = max(dynamic_delay, 0)   # Ensure it doesn't go below 0 seconds
-
-            logging.debug(f"Waiting {dynamic_delay:.2f} seconds before processing the next batch...")
-            time.sleep(dynamic_delay)
-
+            process_and_adjust(batch, current_batch_size)
+            batch = []  # Clear the batch after processing
 
     # Process any remaining domains in the last batch
     if batch:
-        available_domains, timeout_errors_occurred = process_batch_with_error_handling(batch, whois_servers, max_workers)
-        all_available_domains.extend(available_domains)
+        process_and_adjust(batch, current_batch_size)
+
         if timeout_errors_occurred:
             logging.error(f"Final batch encountered errors and could not be retried.")
 
     return all_available_domains
+
 
 def process_batch_with_error_handling(batch, whois_servers, max_workers):
     if not batch:
