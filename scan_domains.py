@@ -132,42 +132,58 @@ def check_domain(domain, whois_servers, retries=5, delay=10):
     logging.error(f"Failed to check {domain} after {retries} attempts, skipping.")
     return None
 
-# Function to generate domains from 3 to 5 characters long (skipping 2 characters for certain TLDs)
+# Function to generate domains from 3 to 5 characters long (with all valid characters and hyphen rule)
 def generate_domains_3_to_5(tld):
-    chars = string.ascii_lowercase + string.digits
+    chars = string.ascii_lowercase + string.digits + "-"
     for length in range(3, 6):  # Start from 3 characters
         for combo in itertools.product(chars, repeat=length):
-            yield ''.join(combo) + tld
+            domain = ''.join(combo)
+            # Validate the domain according to hyphen rules
+            if domain[0] == '-' or domain[-1] == '-' or (length >= 4 and domain[2:4] == '--'):
+                continue  # Skip invalid domains
+            yield domain + tld
 
-# Function to generate domains for 1 and 2 characters for non-skipped TLDs and 6+ characters for all TLDs
+# Function to generate domains for 1-character, 2-character (if applicable), and 6+ characters for all TLDs
 def generate_domains_1_and_6_plus(tld):
-    chars = string.ascii_lowercase
-    digits = string.digits
+    chars = string.ascii_lowercase + string.digits + "-"
 
     # 1-character domains
     for combo in itertools.product(chars, repeat=1):
-        yield ''.join(combo) + tld
+        domain = ''.join(combo)
+        # Validate the domain according to hyphen rules
+        if domain[0] == '-' or domain[-1] == '-':
+            continue  # Skip invalid domains
+        yield domain + tld
 
-    # 2-character domains (only if TLD is not in the skipped list)
-    if tld not in [".com", ".nl"]:  # Add other country TLDs if needed
+    # Skip 2-character domains for all 2-letter TLDs (assumed to be country TLDs)
+    if len(tld) != 3:  # TLDs with length of 3 (including the dot) are not 2-letter country TLDs
         for combo in itertools.product(chars + digits, repeat=2):
-            yield ''.join(combo) + tld
+            domain = ''.join(combo)
+            # Validate the domain according to hyphen rules
+            if domain[0] == '-' or domain[-1] == '-':
+                continue  # Skip invalid domains
+            yield domain + tld
 
     # 6+ character domains
     patterns = [
-        (chars, chars, chars, chars, chars, chars),            # 6-letter domains
+        (chars, chars, chars, chars, chars, chars),            # 6-character domains
+        (chars, chars, chars, chars, chars, chars, chars),     # 7-character domains
+        (chars, chars, chars, chars, chars, chars, chars, chars),  # 8-character domains
         (chars, chars, chars, chars, digits, digits),          # 4 letters + 2 digits
         (chars, chars, chars, digits, digits, digits),         # 3 letters + 3 digits
-        (chars, chars, chars, chars, chars, chars, chars),     # 7-letter domains
+        (chars, chars, chars, chars, digits, digits, digits),  # 4 letters + 3 digits
         (chars, chars, chars, chars, chars, digits),           # 5 letters + 1 digit
         (chars, chars, chars, chars, chars, chars, digits),    # 6 letters + 1 digit
-        (chars, chars, chars, chars, digits, digits, digits),  # 4 letters + 3 digits
         (chars, chars, chars, chars, chars, chars, chars, digits), # 7 letters + 1 digit
     ]
 
     for pattern in patterns:
         for combo in itertools.product(*pattern):
-            yield ''.join(combo) + tld
+            domain = ''.join(combo)
+            # Validate the domain according to hyphen rules
+            if domain[0] == '-' or domain[-1] == '-' or (len(domain) >= 4 and domain[2:4] == '--'):
+                continue  # Skip invalid domains
+            yield domain + tld
 
 def scan_domains_in_batches(domains, whois_servers, initial_batch_size=50, max_batch_size=1000, min_batch_size=10, max_workers=10):
     all_available_domains = []
