@@ -178,6 +178,11 @@ def scan_domains_in_batches(domains, whois_servers, initial_batch_size=50, max_b
     dynamic_delay = 0  # Initialize dynamic_delay to 0
     timeout_errors_occurred = False  # Initialize the timeout errors flag
 
+    # Counters to keep track of consecutive query times
+    under_threshold_count = 0
+    over_threshold_count = 0
+    threshold_limit = 3  # Number of consecutive times to check before adjusting delay
+
     def adjust_batch_size(avg_time_per_domain, timeout_errors_occurred):
         nonlocal current_batch_size
         if timeout_errors_occurred:
@@ -192,6 +197,28 @@ def scan_domains_in_batches(domains, whois_servers, initial_batch_size=50, max_b
             elif avg_time_per_domain > 1.0 and current_batch_size > min_batch_size:
                 current_batch_size = max(current_batch_size - 10, min_batch_size)
                 logging.debug(f"Decreasing batch size to {current_batch_size}")
+
+    def adjust_dynamic_delay(avg_time_per_domain):
+        nonlocal dynamic_delay, under_threshold_count, over_threshold_count
+
+        if avg_time_per_domain < 0.5:
+            under_threshold_count += 1
+            over_threshold_count = 0  # Reset the over threshold counter
+        else:
+            over_threshold_count += 1
+            under_threshold_count = 0  # Reset the under threshold counter
+
+        if under_threshold_count >= threshold_limit:
+            # If under the threshold for multiple times, decrease the delay
+            dynamic_delay = max(dynamic_delay - 0.1, 0)
+            logging.debug(f"Delay decreased to {dynamic_delay:.2f} seconds due to consistent fast responses.")
+            under_threshold_count = 0  # Reset the counter after adjustment
+
+        if over_threshold_count >= threshold_limit:
+            # If over the threshold for multiple times, increase the delay
+            dynamic_delay = min(dynamic_delay + 0.1, 1)
+            logging.debug(f"Delay increased to {dynamic_delay:.2f} seconds due to consistent slow responses.")
+            over_threshold_count = 0  # Reset the counter after adjustment
 
     def process_and_adjust(batch, current_batch_size):
         nonlocal total_time, total_queries, dynamic_delay, all_available_domains
@@ -212,10 +239,8 @@ def scan_domains_in_batches(domains, whois_servers, initial_batch_size=50, max_b
         # Adjust the batch size based on performance and errors
         adjust_batch_size(avg_time_per_domain, timeout_errors_occurred)
 
-        # Dynamic delay based on the average time per domain
-        dynamic_delay = max(0, dynamic_delay + (avg_time_per_domain * current_batch_size) - 0.5)  # Adjust the calculation as needed
-        dynamic_delay = min(dynamic_delay, 10)  # Ensure it doesn't exceed 10 seconds
-        dynamic_delay = max(dynamic_delay, 0)   # Ensure it doesn't go below 0 seconds
+        # Adjust the dynamic delay based on performance
+        adjust_dynamic_delay(avg_time_per_domain)
 
         logging.debug(f"Waiting {dynamic_delay:.2f} seconds before processing the next batch...")
         time.sleep(dynamic_delay)
@@ -235,7 +260,6 @@ def scan_domains_in_batches(domains, whois_servers, initial_batch_size=50, max_b
             logging.error(f"Final batch encountered errors and could not be retried.")
 
     return all_available_domains
-
 
 def process_batch_with_error_handling(batch, whois_servers, max_workers):
     if not batch:
