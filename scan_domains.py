@@ -4,24 +4,74 @@ import itertools
 import string
 import concurrent.futures
 import time
-import random
 import re
 import argparse
 import json
-from collections import defaultdict
-from collections import deque
+from collections import defaultdict, deque
+import os
+import random
 
 class TldConfig:
-    def __init__(self, initial_batch_size=10, max_batch_size=100, min_batch_size=1, initial_delay=1):
-        self.batch_size = initial_batch_size
+    def __init__(self, initial_batch_size=1, max_batch_size=5, min_batch_size=1, initial_delay=0.5):
+        self.batch_size = initial_batch_size if initial_batch_size <= max_batch_size else max_batch_size
         self.max_batch_size = max_batch_size
         self.min_batch_size = min_batch_size
-        self.delay = initial_delay
+        self.delay = initial_delay  # Use the delay from cache
         self.consecutive_successes = 0
-        self.rate_limit_history = deque(maxlen=5)  # Keep track of last 5 rate limit events
+        self.consecutive_failures = 0  # Track consecutive failures
+        self.rate_limit_history = deque(maxlen=5)
+        self.batch_size_history = deque(maxlen=100)  # Store the last 100 batch sizes
+        self.delay_history = deque(maxlen=100)  # Store the last 100 delays
+    
+    def adjust_batch_size_and_delay(self):
+        """Adjust batch size and delay based on recent history."""
+        if any(hit > 0 for hit in self.rate_limit_history):
+            self.consecutive_failures += 1
+            self.consecutive_successes = 0
 
-# Configure logging to capture errors
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+            # Increase delay more aggressively if rate limit hits persist
+            self.delay = min(self.delay * 2, 30)
+        else:
+            self.consecutive_successes += 1
+            self.consecutive_failures = 0
+
+            # Decrease delay cautiously after successful batches
+            if self.consecutive_successes >= 3:
+                self.delay = max(self.delay * 0.8, 0.0)  # Allow delay to go down to 0.0
+
+        # Store adjustments in history
+        self.delay_history.append(self.delay)
+    
+    def get_optimal_config(self):
+        """Get the most frequent or median configuration for batch size and delay from history."""
+        if self.delay_history:
+            optimal_delay = max(set(self.delay_history), key=self.delay_history.count)
+        else:
+            optimal_delay = self.delay
+        
+        return self.batch_size, optimal_delay
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Known patterns for rate limit, timeout, and ambiguous responses
+RATE_LIMIT_PATTERNS = [
+    "error: ratelimit exceeded",
+    "access control limit exceeded",
+    "too many requests",
+    "service temporarily unavailable",
+    "connection refused"
+]
+
+TIMEOUT_PATTERNS = [
+    "connection timed out",
+    "network is unreachable",
+    "connection reset by peer",
+    "timed out"
+]
+
+AMBIGUOUS_PATTERNS = [
+    "status: unknown"
+]
 
 # Function to perform a WHOIS query to a specified WHOIS server
 def custom_whois_query(domain, whois_server, port=43, timeout=10):
@@ -37,13 +87,23 @@ def custom_whois_query(domain, whois_server, port=43, timeout=10):
                     break
                 response += data
             response_text = response.decode('utf-8', errors='ignore')
-            if "error: ratelimit exceeded" in response_text.lower():
+            
+            # Check for rate limit patterns
+            if any(pattern in response_text.lower() for pattern in RATE_LIMIT_PATTERNS):
                 logging.warning(f"Rate limit exceeded for {domain} on {whois_server}")
                 return "ratelimit"
-            if "refer:" in response_text:
-                refer_whois_server = response_text.split("refer:")[1].split()[0].strip()
-                logging.info(f"Redirecting WHOIS query to {refer_whois_server}")
-                return custom_whois_query(domain, refer_whois_server)
+            
+            # Check for ambiguous patterns
+            if any(pattern in response_text.lower() for pattern in AMBIGUOUS_PATTERNS):
+                logging.warning(f"Ambiguous WHOIS response from {whois_server} for {domain}, retrying...")
+                logging.debug(f"Response: {response_text}")
+                return "ambiguous"
+            
+            # Check for timeout patterns
+            if any(pattern in response_text.lower() for pattern in TIMEOUT_PATTERNS):
+                logging.warning(f"Timeout detected in WHOIS response from {whois_server} for {domain}")
+                return "timeout"
+            
             return response_text
     except socket.timeout:
         logging.error(f"Timeout error querying WHOIS server {whois_server} for {domain}")
@@ -107,35 +167,52 @@ def find_best_whois_servers(whois_servers, tld, top_n=2):
     return best_servers
 
 # Function to check if a domain is available using the best WHOIS servers
-def check_domain(domain, whois_servers, retries=5, initial_delay=0.1):
+def check_domain(domain, whois_servers, retries=5, delay=None, is_benchmark=False):
     server_index = 0
-    delay = initial_delay
+    if delay is None:
+        delay = 0.1  # Use a default delay if none is provided
+    
+    initial_delay = delay  # Store the initial delay
+    
+    logging.debug(f"Starting domain check for {domain} with delay {delay} seconds.")
+    
     for attempt in range(retries):
         whois_server = whois_servers[server_index]
         
+        logging.debug(f"Attempt {attempt + 1} for {domain}. Current delay: {delay} seconds.")
         response = custom_whois_query(domain, whois_server)
-        if response == "ratelimit":
-            logging.warning(f"Rate limit hit for {domain} on {whois_server}. Backing off...")
-            return "ratelimit"  # Return "ratelimit" immediately
         
-        if response == "timeout":
-            logging.warning(f"Timeout for {domain} on {whois_server}. Retrying...")
-            time.sleep(delay)
-            delay *= 1.5  # Slightly increase delay for timeouts
-            continue  # Retry the same domain after a timeout
-        
+        if response in ["ratelimit", "timeout", "ambiguous"]:
+            logging.warning(f"Issue detected for {domain} on {whois_server}: {response}.")
+            if is_benchmark:
+                logging.debug(f"Skipping retry during benchmark for {domain}.")
+                return None  # Exit immediately without retrying if it's a benchmark
+            else:
+                logging.warning(f"Retrying after {delay} seconds...")
+                time.sleep(delay)  # Apply the delay before retrying
+                if attempt < retries - 1:  # Don't increase delay on the last attempt
+                    delay = initial_delay  # Reset delay to initial value for consistent retries
+                logging.debug(f"New delay after issue: {delay} seconds.")
+                continue  # Retry the same domain
+
         if response:
-            # Generic checks for domain availability
+            # Integrated checks for domain availability
             domain_available = any(phrase in response.lower() for phrase in [
                 "no match", "not found", "available", "free", "status: free", "domain not found", "is free",
-                "no entries found", "%% not found", "no information available", f"{domain} is free"
+                "no entries found", "%% not found", "no information available", f"{domain} is free",
+                "%% not found",  # .fr specific
+                "status:\tavailable",  # .be specific
+                "status:             available"  # .it specific
             ])
             
-            # Generic checks for taken domains
-            domain_taken = any(phrase in response for phrase in [
-                "Domain Name:", "domain:", "status: active", "status: ok", "status:      active",
-                "Registry Domain ID:", "Registrar:", "Registrant:", "status:                        ACTIVE",
-                "created:", "last modified:", "renewal date:", "option created:"
+            # Integrated checks for taken domains
+            domain_taken = any(phrase in response.lower() for phrase in [
+                "domain name:", "domain:", "status: active", "status: ok", "status:      active",
+                "registry domain id:", "registrar:", "registrant:", "status:                        active",
+                "created:", "last modified:", "renewal date:", "option created:", "status: connect",
+                "status:                        active",  # .fr specific
+                "status:\tnot available",  # .be specific
+                "status:             ok"  # .it specific
             ])
 
             if domain_available:
@@ -145,17 +222,22 @@ def check_domain(domain, whois_servers, retries=5, initial_delay=0.1):
                 logging.info(f"{domain} is taken (checked via {whois_server}).")
                 return None
             
-            logging.warning(f"Ambiguous WHOIS response from {whois_server} for {domain}, retrying...")
+            logging.warning(f"Unexpected WHOIS response from {whois_server} for {domain}, retrying...")
             logging.debug(f"Response: {response}")
         else:
             logging.warning(f"No response from {whois_server} for {domain}, retrying...")
         
-        server_index = (server_index + 1) % len(whois_servers)
-        time.sleep(delay)
-        delay = min(delay * 1.5, 30)  # Increase delay, but cap it at 30 seconds
+        if not is_benchmark:
+            server_index = (server_index + 1) % len(whois_servers)
+            time.sleep(delay)  # Apply the delay before moving to the next attempt
+            delay = min(delay * 1.5, 30)  # Exponential backoff with a maximum cap
+            logging.debug(f"New delay after regular retry: {delay} seconds.")
+        else:
+            break  # If benchmarking, exit the loop after the first attempt
 
     logging.error(f"Failed to check {domain} after {retries} attempts, skipping.")
     return None
+
 
 def generate_domains(tld, limit=1000000):
     chars = string.ascii_lowercase + string.digits + "-"
@@ -212,81 +294,64 @@ def generate_domains(tld, limit=1000000):
 
     logging.info(f"Generated {count} domains in total")
 
-def scan_domains_in_batches(domains, whois_servers, tld_configs, max_workers=10):
+def scan_domains_in_batches(domains, whois_servers, tld_configs, max_workers=10, is_benchmark=False):
     all_available_domains = []
     batches = defaultdict(list)
-    
-    # Organize domains into batches based on their TLD
+
+    # Group domains by TLD
     for domain in domains:
         tld = domain.split('.')[-1]
         batches[tld].append(domain)
-    
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        while batches:
-            for tld, domains in list(batches.items()):
-                config = tld_configs[tld]
-                
-                batch = domains[:config.batch_size]
-                batches[tld] = domains[config.batch_size:]
-                
-                if not batches[tld]:
-                    del batches[tld]
-                
-                # Submit the batch to be processed by the executor
-                future_to_domain = {executor.submit(check_domain, domain, whois_servers, 5, config.delay): domain for domain in batch}
-                available_domains = []
-                rate_limit_hits = 0
-                timeout_hits = 0
-                retry_domains = []
-                
-                # Process the futures as they complete
+
+    while batches:
+        for tld, domains in list(batches.items()):
+            config = tld_configs[tld]
+
+            logging.debug(f"Current TLD: {tld}, Batch Size: {config.max_batch_size}, Delay: {config.delay}")
+
+            batch = domains[:config.max_batch_size]
+            batches[tld] = domains[config.max_batch_size:]
+
+            if not batches[tld]:
+                del batches[tld]
+
+            rate_limit_hits = 0
+            timeout_hits = 0
+            available_domains = []
+            failed_domains = []
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_domain = {
+                    executor.submit(check_domain, domain, whois_servers, 5, config.delay, is_benchmark): domain 
+                    for domain in batch
+                }
+
                 for future in concurrent.futures.as_completed(future_to_domain):
                     domain = future_to_domain[future]
                     try:
                         result = future.result()
                         if result == "ratelimit":
                             rate_limit_hits += 1
-                            retry_domains.append(domain)  # Add domain to retry list if rate limited
-                        elif result == "timeout":
+                            failed_domains.append(domain)
+                        elif result == "timeout" or result == "ambiguous":
                             timeout_hits += 1
-                            retry_domains.append(domain)  # Add domain to retry list if timeout occurred
+                            failed_domains.append(domain)
                         elif result:
                             available_domains.append(result)
                     except Exception as e:
                         logging.error(f"Exception for {domain}: {e}")
-                        retry_domains.append(domain)  # Add domain to retry list in case of other errors
+                        failed_domains.append(domain)
 
-                all_available_domains.extend(available_domains)
+            all_available_domains.extend(available_domains)
 
-                # Add retry domains back to the batch for the next round
-                if retry_domains:
-                    if tld in batches:
-                        batches[tld] = retry_domains + batches[tld]
-                    else:
-                        batches[tld] = retry_domains
+            logging.info(f"Batch size: {config.max_batch_size}, Rate limit hits: {rate_limit_hits}, Timeout hits: {timeout_hits}")
+            
+            if failed_domains:
+                batches[tld] = failed_domains + batches[tld]  # Re-add failed domains to the front of the queue
 
-                # Update rate limit history
-                config.rate_limit_history.append(rate_limit_hits)
-                
-                # Calculate the average rate limit hits from the history
-                avg_rate_limit_hits = sum(config.rate_limit_history) / len(config.rate_limit_history)
-
-                logging.info(f"Batch size: {config.batch_size}, Rate limit hits: {rate_limit_hits}, Timeout hits: {timeout_hits}, Avg rate limit hits: {avg_rate_limit_hits:.2f}, Domains to retry: {len(retry_domains)}")
-                
-                if rate_limit_hits > 0 or timeout_hits > 0:
-                    config.consecutive_successes = 0
-                    # Decrease batch size more aggressively if rate limit or timeout hits occurred
-                    config.batch_size = max(config.batch_size // (rate_limit_hits + timeout_hits + 1), config.min_batch_size)
-                    # Increase delay based on rate limit or timeout hits
-                    config.delay = min(config.delay * (rate_limit_hits + timeout_hits + 1), 30)
-                    logging.debug(f"Rate limit or timeout hit for {tld}. Decreasing batch size to {config.batch_size} and increasing delay to {config.delay:.2f} seconds")
-                else:
-                    config.consecutive_successes += 1
-                    if config.consecutive_successes >= 5:  # Increase this threshold for more conservative growth
-                        config.batch_size = min(config.batch_size + 1, config.max_batch_size)
-                        config.delay = max(config.delay * 0.9, 0.5)  # Decrease delay more slowly
-                        logging.debug(f"Successful batch for {tld}. Increasing batch size to {config.batch_size} and decreasing delay to {config.delay:.2f} seconds")
-
+            # Apply delay before processing the next batch
+            if config.delay > 0:
+                logging.debug(f"Sleeping for {config.delay} seconds before processing the next batch.")
                 time.sleep(config.delay)
 
     return all_available_domains
@@ -317,38 +382,161 @@ def process_batch_with_error_handling(batch, whois_servers, max_workers):
 
         return available_domains, timeout_errors_occurred, rate_limit_hit
 
+# Function to load the existing benchmark cache or create a new one
+def load_benchmark_cache(cache_file="benchmark_cache.json"):
+    if os.path.exists(cache_file):
+        with open(cache_file, "r") as file:
+            return json.load(file)
+    return {}
+
+def save_benchmark_cache(cache, cache_file="benchmark_cache.json"):
+    logging.info(f"Saving benchmark cache to {cache_file}")
+    logging.debug(f"Cache content: {cache}")  # Add this line to debug the cache content
+    if os.path.exists(cache_file):
+        with open(cache_file, "r+") as file:
+            existing_cache = json.load(file)
+            existing_cache.update(cache)
+            file.seek(0)
+            json.dump(existing_cache, file, indent=4)
+    else:
+        with open(cache_file, "w") as file:
+            json.dump(cache, file, indent=4)
+
+# Use the max_batch_size when initializing TldConfig from the cache
+def dynamic_benchmark_tld_config(tld, whois_servers, initial_rate=1, max_rate=1000, rate_step=2, max_retries=5, test_domains=None, cache_file="benchmark_cache.json"):
+    cache = load_benchmark_cache(cache_file)
+    
+    if tld in cache:
+        logging.info(f"Loading benchmark results from cache for .{tld}")
+        config_data = cache[tld]
+        return TldConfig(
+            initial_batch_size=config_data.get('initial_batch_size', 1),
+            max_batch_size=config_data.get('max_batch_size', max_rate),
+            min_batch_size=config_data.get('min_batch_size', 1),
+            initial_delay=config_data.get('initial_delay', 0.1)
+        )
+
+    if not test_domains:
+        test_domains = list(generate_domains(f".{tld}", limit=100))
+
+    rate = initial_rate
+    optimal_rate = initial_rate
+    optimal_delay = 0.1
+    delay_performance_history = {}
+    consecutive_rate_limit_hits = 0
+    rate_limited = False
+    block_duration = 0
+    adaptive_delay = 0.1
+    rate_limit_window = deque(maxlen=10)
+    warning_counter = 0
+    last_good_settings = {'rate': initial_rate, 'delay': 0.1}
+
+    while rate <= max_rate:
+        logging.info(f"Benchmarking with request rate: {rate} requests per second and delay: {adaptive_delay:.3f} seconds")
+        config = TldConfig(initial_batch_size=rate, max_batch_size=rate, min_batch_size=1, initial_delay=adaptive_delay)
+        tld_configs = {tld: config}
+
+        if block_duration > 0:
+            logging.warning(f"Waiting for {block_duration:.2f} seconds due to previous rate limiting")
+            time.sleep(block_duration)
+            block_duration = 0
+
+        try:
+            start_time = time.time()
+            available_domains = scan_domains_in_batches(test_domains[:min(rate, len(test_domains))], whois_servers, tld_configs, max_workers=rate, is_benchmark=True)
+            end_time = time.time()
+            
+            rate_limit_hits = sum(config.rate_limit_history)
+            timeout_hits = sum(1 for domain in available_domains if domain == "timeout")
+            warning_counter += rate_limit_hits + timeout_hits
+            
+            delay_performance_history[adaptive_delay] = rate_limit_hits
+            
+            actual_rate = len(test_domains[:min(rate, len(test_domains))]) / (end_time - start_time)
+            rate_limit_window.append(rate_limit_hits > 0)
+        except Exception as e:
+            logging.error(f"Exception during benchmark: {e}")
+            rate_limit_hits = rate  # Assume all hits were rate limited
+            rate_limit_window.append(True)
+            warning_counter += rate
+
+        if warning_counter > 50:
+            logging.warning(f"More than 50 warnings encountered. Stopping benchmark and using last good settings.")
+            optimal_rate = last_good_settings['rate']
+            optimal_delay = last_good_settings['delay']
+            break
+
+        recent_rate_limits = sum(rate_limit_window)
+
+        if rate_limit_hits > 0 or recent_rate_limits > len(rate_limit_window) // 2:
+            logging.warning(f"Rate limit hits detected with rate {rate}. Adjusting parameters.")
+            consecutive_rate_limit_hits += 1
+            rate_limited = True
+            
+            if consecutive_rate_limit_hits >= 3:
+                block_duration = min(30, block_duration * 2 + random.uniform(1, 5))
+            
+            rate = max(initial_rate, rate // rate_step)
+            adaptive_delay = min(30, adaptive_delay * 1.5)
+        else:
+            rate_limited = False
+            consecutive_rate_limit_hits = 0
+            optimal_rate = rate
+            optimal_delay = adaptive_delay
+            last_good_settings = {'rate': rate, 'delay': adaptive_delay}
+            
+            if actual_rate < rate * 0.9:  # If actual rate is significantly lower than expected
+                adaptive_delay = max(0.01, adaptive_delay * 0.9)  # Decrease delay cautiously
+            else:
+                rate = min(max_rate, rate * rate_step)
+                adaptive_delay = max(0.01, adaptive_delay * 0.95)  # Decrease delay slightly
+
+        if consecutive_rate_limit_hits >= 5:
+            logging.warning("Too many consecutive rate limit hits; stabilizing at the previous optimal rate.")
+            break
+
+        if rate >= 100 and optimal_delay <= 0.05 and not rate_limited:
+            logging.info("High-capacity TLD detected. Early stopping benchmark.")
+            break
+
+    best_delay = min(delay_performance_history, key=delay_performance_history.get, default=optimal_delay)
+    logging.info(f"Best configuration determined: Rate: {optimal_rate}, Delay: {best_delay:.3f} seconds")
+
+    save_benchmark_cache({tld: {
+        'initial_batch_size': 1,
+        'max_batch_size': optimal_rate,
+        'min_batch_size': 1,
+        'initial_delay': best_delay
+    }}, cache_file)
+
+    return TldConfig(max_batch_size=optimal_rate, initial_delay=best_delay)
+
 def main():
     start_time = time.time()
 
-    # Parse command-line arguments
     parser = argparse.ArgumentParser(description="Check domain availability using WHOIS servers.")
     parser.add_argument("--tld", required=True, help="Comma-separated list of TLDs to check (e.g., 'nl,de,com')")
     parser.add_argument("--whois_servers_file", required=True, help="Path to JSON file containing WHOIS server list")
+    parser.add_argument("--benchmark", action="store_true", help="Benchmark and auto-configure TLD settings")
+    parser.add_argument("--cache_file", default="benchmark_cache.json", help="File to store benchmark results")
     args = parser.parse_args()
 
     tlds = args.tld.split(',')
 
     logging.info(f"Starting domain scan for TLDs: {tlds}")
 
-    # Load WHOIS server data from JSON
     with open(args.whois_servers_file, 'r') as file:
         whois_server_data = json.load(file)
 
     logging.info(f"Loaded WHOIS server data from {args.whois_servers_file}")
 
-    # Define TLD-specific configurations
-    default_config = TldConfig(initial_batch_size=1000, max_batch_size=10000, min_batch_size=1, initial_delay=0)
-    tld_configs = defaultdict(lambda: default_config)
-    
-    # Override default config for specific TLDs if needed
-    tld_configs['nl'] = TldConfig(initial_batch_size=1, max_batch_size=5, min_batch_size=1, initial_delay=1)
+    tld_configs = {}
 
     all_available_domains = []
 
     for tld in tlds:
         logging.info(f"Starting scan for .{tld} domains")
         
-        # Find the best WHOIS servers for the current TLD
         best_whois_servers = find_best_whois_servers(
             [server['whois_server'] for server in whois_server_data if server['domain_extension'] == tld],
             tld
@@ -360,11 +548,19 @@ def main():
 
         logging.info(f"Best WHOIS servers for .{tld}: {best_whois_servers}")
 
-        # Generate domains of all lengths
+        if args.benchmark:
+            logging.info(f"Benchmarking TLD configuration for .{tld}")
+            config = dynamic_benchmark_tld_config(
+                tld, best_whois_servers, cache_file=args.cache_file
+            )
+        else:
+            config = TldConfig(initial_batch_size=1, max_batch_size=10000, min_batch_size=1, initial_delay=0)
+
+        tld_configs[tld] = config
+
         logging.info(f"Generating domains for .{tld}")
         all_domains = generate_domains(f".{tld}", limit=1000000)
 
-        # Run the domain checks in batches using the best WHOIS servers
         logging.info(f"Starting domain availability checks for .{tld}")
         available_domains = scan_domains_in_batches(all_domains, best_whois_servers, tld_configs)
         all_available_domains.extend(available_domains)

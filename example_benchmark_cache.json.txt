@@ -1,0 +1,26 @@
+{
+    "de": {
+        "initial_batch_size": 1,
+        "max_batch_size": 5,
+        "min_batch_size": 1,
+        "initial_delay": 2
+    },
+    "com": {
+        "initial_batch_size": 1,
+        "max_batch_size": 800,
+        "min_batch_size": 1,
+        "initial_delay": 0.0
+    },
+    "be": {
+        "initial_batch_size": 1,
+        "max_batch_size": 1,
+        "min_batch_size": 1,
+        "initial_delay": 1
+    },
+    "nl": {
+        "initial_batch_size": 1,
+        "max_batch_size": 1,
+        "min_batch_size": 1,
+        "initial_delay": 0.5
+    }
+}
