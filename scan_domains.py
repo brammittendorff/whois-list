@@ -151,20 +151,31 @@ def test_whois_server(whois_server, test_domain, test_retries=3):
         return float('inf')  # Return a high value if no successful attempts
 
 # Function to determine the best WHOIS servers
-def find_best_whois_servers(whois_servers, tld, top_n=2):
+def find_best_whois_servers(whois_servers, tld, top_n=2, max_retries=3):
     test_domain = f"example.{tld}"
     server_performance = {}
     
     for whois_server in whois_servers:
-        avg_time = test_whois_server(whois_server, test_domain)
-        if avg_time != float('inf'):
-            server_performance[whois_server] = avg_time
+        for attempt in range(max_retries):
+            try:
+                avg_time = test_whois_server(whois_server, test_domain)
+                if avg_time != float('inf'):
+                    server_performance[whois_server] = avg_time
+                    break
+            except Exception as e:
+                logging.warning(f"Attempt {attempt + 1} failed for {whois_server}: {str(e)}")
+                if attempt == max_retries - 1:
+                    logging.error(f"All attempts failed for {whois_server}")
     
     # Sort servers by response time and return the top_n fastest servers
     sorted_servers = sorted(server_performance, key=server_performance.get)
     best_servers = sorted_servers[:top_n]
     
-    logging.info(f"Best WHOIS servers selected for .{tld}: {best_servers}")
+    if best_servers:
+        logging.info(f"Best WHOIS servers selected for .{tld}: {best_servers}")
+    else:
+        logging.warning(f"No responsive WHOIS servers found for .{tld}")
+    
     return best_servers
 
 def parse_whois_response(response):
@@ -439,11 +450,11 @@ def save_benchmark_cache(cache, cache_file="benchmark_cache.json"):
         with open(cache_file, "w") as file:
             json.dump(cache, file, indent=4)
 
-def generate_benchmark_domains(tld, count=100):
-    """Generate a fixed number of domains for benchmarking."""
+def generate_benchmark_domains(tld, count=100, min_length=5):
+    """Generate a fixed number of domains for benchmarking, with a minimum length."""
     chars = string.ascii_lowercase + string.digits + "-"
     domains = []
-    length = 1
+    length = min_length
     while len(domains) < count:
         for combo in itertools.product(chars, repeat=length):
             domain = ''.join(combo)
@@ -452,6 +463,8 @@ def generate_benchmark_domains(tld, count=100):
                 if len(domains) == count:
                     return domains
         length += 1
+
+    return domains  # In case we couldn't generate enough domains (shouldn't happen)
 
 def dynamic_benchmark_tld_config(tld, whois_servers, initial_rate=1, max_rate=1000, rate_step=2, max_retries=5, cache_file="benchmark_cache.json"):
     cache = load_benchmark_cache(cache_file)
@@ -466,8 +479,8 @@ def dynamic_benchmark_tld_config(tld, whois_servers, initial_rate=1, max_rate=10
             initial_delay=config_data.get('initial_delay', 0.1)
         )
 
-    # Generate exactly 100 test domains
-    test_domains = generate_benchmark_domains(tld)
+    # Generate exactly 100 test domains with a minimum length of 5
+    test_domains = generate_benchmark_domains(tld, count=100, min_length=5)
 
     rate = initial_rate
     optimal_rate = initial_rate
