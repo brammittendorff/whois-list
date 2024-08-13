@@ -7,7 +7,7 @@
     },
     "com": {
         "initial_batch_size": 1,
-        "max_batch_size": 800,
+        "max_batch_size": 1000,
         "min_batch_size": 1,
         "initial_delay": 0.0
     },
@@ -22,5 +22,29 @@
         "max_batch_size": 1,
         "min_batch_size": 1,
         "initial_delay": 0.5
+    },
+    "fr": {
+        "initial_batch_size": 1,
+        "max_batch_size": 5,
+        "min_batch_size": 1,
+        "initial_delay": 1
+    },
+    "ac": {
+        "initial_batch_size": 1,
+        "max_batch_size": 5,
+        "min_batch_size": 1,
+        "initial_delay": 1
+    },
+    "ae": {
+        "initial_batch_size": 1,
+        "max_batch_size": 1,
+        "min_batch_size": 1,
+        "initial_delay": 2
+    },
+    "af": {
+        "initial_batch_size": 1,
+        "max_batch_size": 128,
+        "min_batch_size": 1,
+        "initial_delay": 0.1
     }
 }

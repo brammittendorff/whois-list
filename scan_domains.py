@@ -7,6 +7,7 @@ import time
 import re
 import argparse
 import json
+import math
 from collections import defaultdict, deque
 import os
 import random
@@ -166,7 +167,41 @@ def find_best_whois_servers(whois_servers, tld, top_n=2):
     logging.info(f"Best WHOIS servers selected for .{tld}: {best_servers}")
     return best_servers
 
-# Function to check if a domain is available using the best WHOIS servers
+def parse_whois_response(response):
+    """
+    Parse the WHOIS response to extract key information.
+    """
+    info = {
+        'domain_name': None,
+        'registrar': None,
+        'creation_date': None,
+        'expiration_date': None,
+        'name_servers': [],
+        'status': []
+    }
+    
+    lines = response.lower().split('\n')
+    for line in lines:
+        if ':' in line:
+            key, value = line.split(':', 1)
+            key = key.strip()
+            value = value.strip()
+            
+            if 'domain name' in key:
+                info['domain_name'] = value
+            elif 'registrar' in key:
+                info['registrar'] = value
+            elif 'creation date' in key or 'created' in key:
+                info['creation_date'] = value
+            elif 'expiration date' in key or 'registry expiry date' in key:
+                info['expiration_date'] = value
+            elif 'name server' in key:
+                info['name_servers'].append(value)
+            elif 'status' in key:
+                info['status'].append(value)
+    
+    return info
+
 def check_domain(domain, whois_servers, retries=5, delay=None, is_benchmark=False):
     server_index = 0
     if delay is None:
@@ -196,6 +231,8 @@ def check_domain(domain, whois_servers, retries=5, delay=None, is_benchmark=Fals
                 continue  # Retry the same domain
 
         if response:
+            parsed_info = parse_whois_response(response)
+            
             # Integrated checks for domain availability
             domain_available = any(phrase in response.lower() for phrase in [
                 "no match", "not found", "available", "free", "status: free", "domain not found", "is free",
@@ -215,15 +252,26 @@ def check_domain(domain, whois_servers, retries=5, delay=None, is_benchmark=Fals
                 "status:             ok"  # .it specific
             ])
 
-            if domain_available:
+            # Additional checks based on parsed information
+            if parsed_info['domain_name'] or parsed_info['registrar'] or parsed_info['creation_date']:
+                domain_taken = True
+            
+            if parsed_info['status']:
+                if any('available' in status for status in parsed_info['status']):
+                    domain_available = True
+                elif any(status in ['active', 'ok', 'registered'] for status in parsed_info['status']):
+                    domain_taken = True
+
+            if domain_available and not domain_taken:
                 logging.info(f"{domain} is available (checked via {whois_server})!")
                 return domain
             elif domain_taken:
                 logging.info(f"{domain} is taken (checked via {whois_server}).")
                 return None
             
-            logging.warning(f"Unexpected WHOIS response from {whois_server} for {domain}, retrying...")
+            logging.warning(f"Unexpected WHOIS response from {whois_server} for {domain}, with response {response} retrying...")
             logging.debug(f"Response: {response}")
+            logging.debug(f"Parsed info: {parsed_info}")
         else:
             logging.warning(f"No response from {whois_server} for {domain}, retrying...")
         
@@ -238,61 +286,50 @@ def check_domain(domain, whois_servers, retries=5, delay=None, is_benchmark=Fals
     logging.error(f"Failed to check {domain} after {retries} attempts, skipping.")
     return None
 
-
-def generate_domains(tld, limit=1000000):
+def generate_domains(tld, min_length=3, max_length=16):
     chars = string.ascii_lowercase + string.digits + "-"
-    count = 0
-    tld_length = len(tld.lstrip('.'))
+    tld = tld.lstrip('.')
 
-    # 1-character domains (skip for TLDs with 3 characters or less)
-    if tld_length > 3:
-        for char in chars:
-            if count >= limit:
-                logging.info(f"Reached limit of {limit} domains")
-                return
-            if char != '-':
-                yield char + tld
-                count += 1
-
-    # 2-character domains (if applicable, skip for 3-character TLDs)
-    if tld_length != 3:
-        for combo in itertools.product(chars, repeat=2):
-            if count >= limit:
-                logging.info(f"Reached limit of {limit} domains")
-                return
-            domain = ''.join(combo)
-            if domain[0] != '-' and domain[-1] != '-':
-                yield domain + tld
-                count += 1
-
-    # 3 to 5 character domains
-    for length in range(3, 6):
+    for length in range(min_length, max_length + 1):
         for combo in itertools.product(chars, repeat=length):
-            if count >= limit:
-                logging.info(f"Reached limit of {limit} domains")
-                return
             domain = ''.join(combo)
-            if domain[0] != '-' and domain[-1] != '-' and '--' not in domain:
-                yield domain + tld
-                count += 1
+            if is_valid_domain(domain):
+                yield domain + '.' + tld
 
-    # 6+ character domains (limited patterns for demonstration)
-    patterns = [
-        (chars,) * 6,       # 6-character domains
-        (chars,) * 7,       # 7-character domains
-    ]
+def count_valid_domains(min_length, max_length):
+    total = 0
+    alphabet_size = 36  # 26 letters + 10 digits
+    
+    for length in range(min_length, max_length + 1):
+        # Calculate all possible combinations
+        all_combinations = alphabet_size ** length
+        
+        # Subtract combinations starting with dash
+        invalid_start = alphabet_size ** (length - 1)
+        
+        # Subtract combinations ending with dash
+        invalid_end = alphabet_size ** (length - 1)
+        
+        # Add back combinations that were subtracted twice (starting and ending with dash)
+        double_counted = alphabet_size ** (length - 2)
+        
+        # Calculate valid combinations for this length
+        valid = all_combinations - invalid_start - invalid_end + double_counted
+        
+        total += valid
 
-    for pattern in patterns:
-        for combo in itertools.product(*pattern):
-            if count >= limit:
-                logging.info(f"Reached limit of {limit} domains")
-                return
-            domain = ''.join(combo)
-            if domain[0] != '-' and domain[-1] != '-' and '--' not in domain:
-                yield domain + tld
-                count += 1
+    return total
 
-    logging.info(f"Generated {count} domains in total")
+def is_valid_domain(domain):
+    # Check if the domain is valid
+    if domain[0] == '-' or domain[-1] == '-':
+        return False
+    if not any(c.isalnum() for c in domain):
+        return False
+    # Allow consecutive dashes, but not at the start or end
+    if domain.startswith('--') or domain.endswith('--'):
+        return False
+    return True
 
 def scan_domains_in_batches(domains, whois_servers, tld_configs, max_workers=10, is_benchmark=False):
     all_available_domains = []
@@ -402,8 +439,21 @@ def save_benchmark_cache(cache, cache_file="benchmark_cache.json"):
         with open(cache_file, "w") as file:
             json.dump(cache, file, indent=4)
 
-# Use the max_batch_size when initializing TldConfig from the cache
-def dynamic_benchmark_tld_config(tld, whois_servers, initial_rate=1, max_rate=1000, rate_step=2, max_retries=5, test_domains=None, cache_file="benchmark_cache.json"):
+def generate_benchmark_domains(tld, count=100):
+    """Generate a fixed number of domains for benchmarking."""
+    chars = string.ascii_lowercase + string.digits + "-"
+    domains = []
+    length = 1
+    while len(domains) < count:
+        for combo in itertools.product(chars, repeat=length):
+            domain = ''.join(combo)
+            if is_valid_domain(domain):
+                domains.append(f"{domain}.{tld}")
+                if len(domains) == count:
+                    return domains
+        length += 1
+
+def dynamic_benchmark_tld_config(tld, whois_servers, initial_rate=1, max_rate=1000, rate_step=2, max_retries=5, cache_file="benchmark_cache.json"):
     cache = load_benchmark_cache(cache_file)
     
     if tld in cache:
@@ -416,8 +466,8 @@ def dynamic_benchmark_tld_config(tld, whois_servers, initial_rate=1, max_rate=10
             initial_delay=config_data.get('initial_delay', 0.1)
         )
 
-    if not test_domains:
-        test_domains = list(generate_domains(f".{tld}", limit=100))
+    # Generate exactly 100 test domains
+    test_domains = generate_benchmark_domains(tld)
 
     rate = initial_rate
     optimal_rate = initial_rate
@@ -428,7 +478,6 @@ def dynamic_benchmark_tld_config(tld, whois_servers, initial_rate=1, max_rate=10
     block_duration = 0
     adaptive_delay = 0.1
     rate_limit_window = deque(maxlen=10)
-    warning_counter = 0
     last_good_settings = {'rate': initial_rate, 'delay': 0.1}
 
     while rate <= max_rate:
@@ -443,12 +492,17 @@ def dynamic_benchmark_tld_config(tld, whois_servers, initial_rate=1, max_rate=10
 
         try:
             start_time = time.time()
-            available_domains = scan_domains_in_batches(test_domains[:min(rate, len(test_domains))], whois_servers, tld_configs, max_workers=rate, is_benchmark=True)
+            available_domains = scan_domains_in_batches(
+                test_domains[:min(rate, len(test_domains))],
+                whois_servers,
+                tld_configs,
+                max_workers=rate,
+                is_benchmark=True
+            )
             end_time = time.time()
             
             rate_limit_hits = sum(config.rate_limit_history)
             timeout_hits = sum(1 for domain in available_domains if domain == "timeout")
-            warning_counter += rate_limit_hits + timeout_hits
             
             delay_performance_history[adaptive_delay] = rate_limit_hits
             
@@ -458,13 +512,7 @@ def dynamic_benchmark_tld_config(tld, whois_servers, initial_rate=1, max_rate=10
             logging.error(f"Exception during benchmark: {e}")
             rate_limit_hits = rate  # Assume all hits were rate limited
             rate_limit_window.append(True)
-            warning_counter += rate
-
-        if warning_counter > 50:
-            logging.warning(f"More than 50 warnings encountered. Stopping benchmark and using last good settings.")
-            optimal_rate = last_good_settings['rate']
-            optimal_delay = last_good_settings['delay']
-            break
+            break  # Stop the benchmark if an exception occurs
 
         recent_rate_limits = sum(rate_limit_window)
 
@@ -511,14 +559,45 @@ def dynamic_benchmark_tld_config(tld, whois_servers, initial_rate=1, max_rate=10
 
     return TldConfig(max_batch_size=optimal_rate, initial_delay=best_delay)
 
+def calculate_processing_time(tld, config, num_domains):
+    """
+    Calculate the estimated processing time for a given TLD.
+    
+    :param tld: The TLD being processed
+    :param config: The TldConfig object for the TLD
+    :param num_domains: The number of domains to process
+    :return: A dictionary containing the processing time in various units
+    """
+    batch_size = config.max_batch_size
+    delay = config.delay
+    processing_time_per_domain = 0.1  # Assuming 0.1 seconds per domain
+
+    time_per_batch = (batch_size * processing_time_per_domain) + delay
+    total_batches = -(-num_domains // batch_size)  # Ceiling division
+    total_time_seconds = total_batches * time_per_batch
+
+    days = total_time_seconds / (24 * 3600)
+    weeks = days / 7
+    years = days / 365.25
+
+    return {
+        "tld": tld,
+        "seconds": total_time_seconds,
+        "days": days,
+        "weeks": weeks,
+        "years": years
+    }
+
 def main():
     start_time = time.time()
-
     parser = argparse.ArgumentParser(description="Check domain availability using WHOIS servers.")
     parser.add_argument("--tld", required=True, help="Comma-separated list of TLDs to check (e.g., 'nl,de,com')")
     parser.add_argument("--whois_servers_file", required=True, help="Path to JSON file containing WHOIS server list")
     parser.add_argument("--benchmark", action="store_true", help="Benchmark and auto-configure TLD settings")
     parser.add_argument("--cache_file", default="benchmark_cache.json", help="File to store benchmark results")
+    parser.add_argument("--auto-confirm", action="store_true", help="Skip user confirmation and proceed with scan")
+    parser.add_argument("--min-length", type=int, default=3, help="Minimum length of domain names to generate (default: 3)")
+    parser.add_argument("--max-length", type=int, default=16, help="Maximum length of domain names to generate (default: 16)")
     args = parser.parse_args()
 
     tlds = args.tld.split(',')
@@ -531,11 +610,11 @@ def main():
     logging.info(f"Loaded WHOIS server data from {args.whois_servers_file}")
 
     tld_configs = {}
+    processing_times = []
 
-    all_available_domains = []
-
+    # Benchmark and configure TLDs
     for tld in tlds:
-        logging.info(f"Starting scan for .{tld} domains")
+        logging.info(f"Configuring for .{tld} domains")
         
         best_whois_servers = find_best_whois_servers(
             [server['whois_server'] for server in whois_server_data if server['domain_extension'] == tld],
@@ -558,11 +637,39 @@ def main():
 
         tld_configs[tld] = config
 
+    # Calculate and display processing times
+    total_domains = count_valid_domains(args.min_length, args.max_length) * len(tlds)
+    logging.info(f"Total domains to be checked: {total_domains}")
+    total_days = 0
+    print("\nEstimated processing times:")
+    for tld, config in tld_configs.items():
+        proc_time = calculate_processing_time(tld, config, num_domains=total_domains)
+        processing_times.append(proc_time)
+        print(f".{tld}: {proc_time['days']:.2f} days")
+        total_days += proc_time['days']
+    print(f"\nTotal estimated processing time: {total_days:.2f} days ({total_days/7:.2f} weeks, {total_days/365.25:.2f} years)")
+
+    # Ask for user confirmation if auto-confirm is not set
+    if not args.auto_confirm:
+        user_input = input("Do you want to proceed with the scan? (y/n): ")
+        if user_input.lower() != 'y':
+            print("Scan cancelled by user.")
+            return
+    else:
+        print("Auto-confirm enabled. Proceeding with scan...")
+
+    # Proceed with scanning
+    all_available_domains = []
+    for tld, config in tld_configs.items():
+        logging.info(f"Starting scan for .{tld} domains")
         logging.info(f"Generating domains for .{tld}")
-        all_domains = generate_domains(f".{tld}", limit=1000000)
+        all_domains = generate_domains(tld, args.min_length, args.max_length)
 
         logging.info(f"Starting domain availability checks for .{tld}")
-        available_domains = scan_domains_in_batches(all_domains, best_whois_servers, tld_configs)
+        available_domains = scan_domains_in_batches(all_domains, find_best_whois_servers(
+            [server['whois_server'] for server in whois_server_data if server['domain_extension'] == tld],
+            tld
+        ), {tld: config})
         all_available_domains.extend(available_domains)
 
         logging.info(f"Completed scan for .{tld} domains. Available domains: {available_domains}")
